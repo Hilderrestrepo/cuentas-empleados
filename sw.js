@@ -1,6 +1,6 @@
 // Service worker mínimo: guarda el "cascarón" de la app para abrirla rápido.
 // Los datos siempre van a la red (la app necesita conexión para cuadrar cuentas).
-const CACHE = "cuentas-v5";
+const CACHE = "cuentas-v6";
 const SHELL = ["./", "./index.html", "./app.js", "./calc.js", "./ui.js", "./config.js", "./manifest.webmanifest", "./icon-192.png", "./icon-512.png"];
 
 self.addEventListener("install", (e) => {

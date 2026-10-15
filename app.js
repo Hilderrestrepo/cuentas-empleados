@@ -298,6 +298,21 @@ function manejadoresCartera(lista, rutaId, recargar) {
       },
     });
   };
+  H.fecha = (d) => {
+    const c = buscar(d.id);
+    formModal({
+      title: `Cambiar fecha de cobro · ${c.cliente}`, intro: `Fecha actual: ${esc(fechaCorta(c.vence))}. Úsalo si el vendedor o el entregador se equivocó de fecha.`,
+      fields: [
+        { id: "vence", label: "Fecha de cobro correcta", type: "date", value: c.vence, required: true },
+        { id: "nota", label: "Nota (opcional)", type: "text", placeholder: "Ej. corregido por el administrador" },
+      ],
+      onSubmit: async (v) => {
+        await Q(sb.rpc("posponer_cartera", { p_cartera: c.id, p_vence: v.vence, p_nota: v.nota || null }));
+        toast("Fecha actualizada");
+        recargar();
+      },
+    });
+  };
   H.directo = (d) => {
     const c = buscar(d.id);
     formModal({
@@ -340,7 +355,7 @@ async function vistaCartera() {
     ${lista.length ? [...grupos.values()].map((g) => `
       <div class="mut" style="margin:10px 4px 4px"><b>${esc(g.cliente)}</b> · ${fmt(g.items.reduce((s, c) => s + num(c.saldo), 0))}</div>
       ${g.items.map((c) => cardCartera(c, S.me.rol === "vendedor" ? "" : `<div class="grid2">
-        <button class="btn sec sm" data-a="posponer" data-id="${c.id}">Posponer</button>
+        ${esAdmin ? `<button class="btn sec sm" data-a="fecha" data-id="${c.id}">Cambiar fecha</button>` : `<button class="btn sec sm" data-a="posponer" data-id="${c.id}">Posponer</button>`}
         ${esAdmin ? `<button class="btn sm" data-a="directo" data-id="${c.id}">Pago directo</button>` : ""}</div>`)).join("")}`).join("")
       : `<div class="card mut">No hay fiados en esta lista. 🎉</div>`}`;
   HC.filtro = (v) => { CARTERA.filtro = v; vistaCartera(); };
@@ -457,7 +472,7 @@ async function rutaView(id, volver, silencioso = false) {
   const editable = !guardada && (esAdmin || esDueno);
   const soloMira = !esAdmin && !esDueno;
   const vacio = Promise.resolve([]);
-  const [facturas, ajustes, pagos, cobros, entregas, gastos, libro] = await Promise.all([
+  const [facturas, ajustes, pagos, cobros, entregas, gastos, libro, carteraPend] = await Promise.all([
     Q(sb.from("facturas").select("*, cliente:clientes(nombre)").eq("ruta_id", id).order("creado_en")),
     Q(sb.from("ajustes").select("*").eq("ruta_id", id).order("creado_en")),
     esDinero ? Q(sb.from("pagos_factura").select("*").eq("ruta_id", id)) : vacio,
@@ -465,12 +480,17 @@ async function rutaView(id, volver, silencioso = false) {
     esDinero ? Q(sb.from("entregas_dinero").select("*").eq("ruta_id", id).order("creado_en")) : vacio,
     esDinero ? Q(sb.from("gastos_ruta").select("*").eq("ruta_id", id).order("creado_en")) : vacio,
     guardada && esDinero ? Q(sb.from("libro").select("*").eq("ruta_id", id)) : vacio,
+    editable && esDinero ? Q(sb.rpc("cartera_pendiente")) : vacio,
   ]);
   if (tok !== renderId) return;
   if (silencioso) { H = {}; HC = {}; HI = {}; }
   const recargar = () => rutaView(id, volver);
   const C = calcRuta({ facturas, ajustes, pagos, cobros, entregas, gastos, base: ruta.base, cargue: ruta.valor_cargue });
   const entNombre = nombreDe(ruta.entregador_id);
+  // Clientes por cobrar: fiados que ya vencieron (o vencen hoy) y todavía no se resolvieron en este cierre.
+  // Se resuelven cobrando o con "No pagó" + nueva fecha (así dejan de estar vencidos).
+  const porCobrar = carteraPend.filter((c) => c.vence <= ruta.fecha && !cobros.some((x) => x.cartera_id === c.id));
+  const bloqueaCobros = porCobrar.length > 0 && !esAdmin;
   $title.textContent = `${fechaCorta(ruta.fecha)} · ${entNombre}`;
 
   /* --- resumen --- */
@@ -495,20 +515,25 @@ async function rutaView(id, volver, silencioso = false) {
 
   /* --- comisiones --- */
   let comHtml = "";
-  const vendAtado = S.dir.find((d) => d.rol === "vendedor" && d.entregador_id === ruta.entregador_id && d.activo);
-  if ((esAdmin || esDueno) && !guardada && (facturas.length || ruta.valor_cargue != null)) {
+  const vendAtado = S.dir.find((d) => d.id === ruta.vendedor_id)
+    || S.dir.find((d) => d.rol === "vendedor" && d.entregador_id === ruta.entregador_id && d.activo);
+  if ((esAdmin || esDueno) && !guardada && (facturas.length || ruta.valor_cargue != null || entregas.length)) {
     const K = comisiones(C, pctDe(ruta.entregador_id), vendAtado ? vendAtado.pct_comision : null);
     const desc = C.faltanteEntregador;
     comHtml = `<div class="card"><b>Comisiones estimadas</b>
       <table class="tabla">
         ${fila(`Entregador ${esc(entNombre)} (${pctDe(ruta.entregador_id)}%)`, fmt(K.entregador))}
-        ${S.me.rol === "admin" ? (vendAtado ? fila(`Vendedor ${esc(vendAtado.nombre)} (${num(vendAtado.pct_comision)}%)`, fmt(K.vendedor)) : fila("Vendedor", "sin vendedor atado")) : ""}
+        ${S.me.rol === "admin" ? (vendAtado ? fila(`Vendedor ${esc(vendAtado.nombre)} (${num(vendAtado.pct_comision)}%) · estimada`, fmt(K.vendedor)) : fila("Vendedor", "sin vendedor atado")) : ""}
         ${desc > 0 ? fila("Descuentos al entregador (faltantes)", "−" + fmt(desc), { cls: "red" }) : ""}
       </table><div class="mut">Las dos comisiones se miden sobre la venta real de la ruta. Se calculan de verdad al guardar.</div></div>`;
   } else if (guardada && esDinero && libro.length) {
     comHtml = `<div class="card"><b>Comisiones y descuentos de esta ruta</b><table class="tabla">
       ${libro.map((l) => fila(`${esc(nombreDe(l.empleado_id))} · ${l.tipo === "comision" ? `comisión ${num(l.pct)}% sobre ${fmt(l.base)}` : esc(l.nota || "Descuento")}`,
-        (l.tipo === "comision" ? "" : "−") + fmt(l.monto), { cls: l.tipo === "comision" ? "" : "red" })).join("")}</table></div>`;
+        (l.tipo === "comision" ? "" : "−") + fmt(l.monto), { cls: l.tipo === "comision" ? "" : "red" })).join("")}
+      ${esAdmin && vendAtado && !libro.some((l) => l.empleado_id === vendAtado.id && l.tipo === "comision")
+        ? fila(`Vendedor ${esc(vendAtado.nombre)} · sin comisión registrada (estimada ${num(vendAtado.pct_comision)}%)`, fmt(Math.round(num(ruta.venta_real) * num(vendAtado.pct_comision) / 100)), { cls: "red" }) : ""}</table>
+      ${esAdmin && vendAtado && !libro.some((l) => l.empleado_id === vendAtado.id && l.tipo === "comision")
+        ? `<div class="mut">Para dársela: en la ficha del vendedor usa "Sincronizar ventas anteriores", o reabre esta ruta y vuelve a guardarla.</div>` : ""}</div>`;
   }
 
   /* --- fotos (siempre opcionales) --- */
@@ -558,6 +583,12 @@ async function rutaView(id, volver, silencioso = false) {
     <div class="card"><table class="tabla">${filas.join("")}</table>
       ${esDinero ? `<div class="mut" style="margin-top:6px">Fiado nuevo (queda por cobrar): ${fmt(C.fiadoNuevo)} · Transferencias directas: ${fmt(C.transfFact + C.cobrosTr)}</div>` : ""}</div>
     ${comHtml}
+    ${editable && esDinero && porCobrar.length ? `<div class="card"><b>Clientes por cobrar (${porCobrar.length})</b>
+      <div class="mut">${esAdmin ? "Pendientes de cobro. Como administrador puedes cerrar igual." : "Para finalizar, marca cada cliente: pagó, o no pagó con otra fecha."}</div></div>
+      ${porCobrar.map((c) => cardCartera(c, `<div class="grid2"><button class="btn sm" data-a="cobrar" data-tipo="efectivo" data-id="${c.id}">Pagó en efectivo</button>
+        <button class="btn sm" data-a="cobrar" data-tipo="transferencia" data-id="${c.id}">Pagó por transf.</button></div>
+        <div class="grid2"><button class="btn sec sm" data-a="otro" data-id="${c.id}">Pagó una parte</button>
+        <button class="btn sec sm" data-a="posponer" data-id="${c.id}">No pagó</button></div>`)).join("")}` : ""}
     <div class="row sec-h"><h3>Facturas (${facturas.length})</h3>${editable ? `<div class="grid2" style="width:auto;gap:6px"><button class="btn sec sm auto" data-a="addCliente">+ Cliente</button><button class="btn sm auto" data-a="addFac">+ Factura</button></div>` : ""}</div>
     ${facHtml || `<div class="card mut">Sin facturas.</div>`}
     <div class="card"><div class="row"><b>Devoluciones y faltantes</b>${editable ? `<button class="btn sm auto" data-a="addAj">+ Devolución</button>` : ""}</div>${devHtml || `<div class="mut">Ninguna.</div>`}</div>
@@ -566,7 +597,8 @@ async function rutaView(id, volver, silencioso = false) {
     <div class="card"><div class="row"><b>Entrega de dinero</b></div>
       ${editable ? `<div class="grid2" style="margin:8px 0"><button class="btn sm" data-a="addEfectivo">+ Efectivo</button><button class="btn sm" data-a="addConsig">+ Consignación</button></div>` : ""}${entHtml || `<div class="mut">Ninguna.</div>`}</div>
     <div class="card"><div class="row"><b>Gastos de ruta</b>${editable ? `<button class="btn sm auto" data-a="addGasto">+ Gasto</button>` : ""}</div>${gasHtml || `<div class="mut">Ninguno.</div>`}</div>` : ""}
-    ${editable ? `<button class="btn" data-a="guardar">Guardar cierre</button>
+    ${editable && bloqueaCobros ? `<div class="msg err">Faltan ${porCobrar.length} cliente(s) por cobrar. Marca si pagó o si no pagó (con nueva fecha) para poder finalizar.</div>` : ""}
+    ${editable ? `<button class="btn" data-a="guardar"${bloqueaCobros ? " disabled" : ""}>Guardar cierre</button>
        <p class="mut">Después de guardar no se puede modificar ni borrar nada. Solo el administrador puede reabrirlo.</p>
        <button class="link" style="color:var(--red)" data-a="borrarRuta">Borrar esta ruta</button>` : ""}
     ${guardada && S.me.rol === "admin" ? `<button class="btn sec" data-a="reabrir">Reabrir para corregir (administrador)</button>` : ""}`;
@@ -794,10 +826,13 @@ async function rutaView(id, volver, silencioso = false) {
   H.addGasto = () => gastoForm(null);
   H.editGasto = (d) => gastoForm(gastos.find((x) => x.id === d.id));
 
+  if (editable && esDinero) manejadoresCartera(carteraPend, id, recargar);
   H.guardar = async () => {
     if (C.errores.length) throw new Error("Corrige las facturas marcadas en rojo antes de guardar");
-    if (!facturas.length && !cobros.length) throw new Error("Agrega facturas o cobros antes de guardar");
+    if (!facturas.length && !cobros.length && ruta.valor_cargue == null && !entregas.length) throw new Error("Anota el cargue, una factura, un cobro o la entrega de dinero antes de guardar");
+    if (bloqueaCobros) throw new Error(`Faltan ${porCobrar.length} cliente(s) por cobrar: marca si pagó o si no pagó (con nueva fecha)`);
     let aviso = "¿Guardar el cierre?\n\nDespués de guardar NO se puede modificar ni borrar nada. Solo el administrador puede reabrirlo.";
+    if (porCobrar.length && esAdmin) aviso += `\n\n⚠ Hay ${porCobrar.length} cliente(s) por cobrar sin resolver (puedes cerrar igual como administrador).`;
     if (C.diferencia > 0) aviso += `\n\n⚠ Hay un FALTANTE de dinero de ${fmt(C.diferencia)}. Queda como pendiente de otros turnos; el administrador decide si lo descuenta.`;
     if (C.diferencia < 0) aviso += `\n\nHay un SOBRANTE de dinero de ${fmt(-C.diferencia)}. Queda a favor en el pendiente de otros turnos.`;
     if (C.faltanteEntregador > 0) aviso += `\n\n⚠ Faltante de mercancía por pérdida del entregador: ${fmt(C.faltanteEntregador)} (se descuenta de su pago).`;
@@ -837,19 +872,31 @@ async function rutaView(id, volver, silencioso = false) {
 /* ------------------------------------------------------------------ */
 /* Saldo, comisiones y ganancias                                       */
 /* ------------------------------------------------------------------ */
-const SALDO = { rango: "30" };
+const SALDO = { rango: "30", desde: "", hasta: "" };
+// Rango de fechas del filtro de ganancias: [desde, hasta] (null = sin límite).
+function rangoFechas(r) {
+  const hoy = hoyBogota();
+  if (r === "todo") return [null, null];
+  if (r === "hoy") return [hoy, hoy];
+  if (r === "ayer") { const a = sumarDias(hoy, -1); return [a, a]; }
+  if (r === "mes") return [hoy.slice(0, 8) + "01", null];
+  if (r === "custom") return [SALDO.desde || null, SALDO.hasta || null];
+  return [sumarDias(hoy, -(Number(r) - 1)), null];
+}
 async function vistaSaldo(empId, propio, volver = null) {
   const esAdmin = S.me.rol === "admin";
   const emp = S.dir.find((d) => d.id === empId) || { nombre: "—", rol: "" };
   const tok = view(propio ? "Mi saldo" : emp.nombre, volver);
   const r = SALDO.rango;
-  const desde = r === "todo" ? null : sumarDias(hoyBogota(), -(Number(r) - 1));
+  const [desde, hasta] = rangoFechas(r);
   let ql = sb.from("libro").select("*").eq("empleado_id", empId)
     .order("fecha", { ascending: false }).order("creado_en", { ascending: false }).limit(500);
   if (desde) ql = ql.gte("fecha", desde);
+  if (hasta) ql = ql.lte("fecha", hasta);
   let qp = sb.from("pendientes_turno").select("*").eq("empleado_id", empId)
     .order("fecha", { ascending: false }).order("creado_en", { ascending: false }).limit(500);
   if (desde) qp = qp.gte("fecha", desde);
+  if (hasta) qp = qp.lte("fecha", hasta);
   const [saldoRaw, lineas, perfil, pendRaw, hist] = await Promise.all([
     Q(sb.rpc("saldo_de", { p_emp: empId })),
     Q(ql),
@@ -866,9 +913,11 @@ async function vistaSaldo(empId, propio, volver = null) {
     descuento: ["Descontado del saldo", "+", ""], perdon: ["Perdonado", "+", ""],
   };
   const G = resumenGanancias(lineas);
-  const rangos = [["7", "Últimos 7 días"], ["30", "Últimos 30 días"], ["90", "Últimos 3 meses"]];
+  const rangos = [["hoy", "Hoy"], ["ayer", "Ayer"], ["7", "Últimos 7 días"], ["30", "Últimos 30 días"], ["mes", "Este mes"], ["90", "Últimos 3 meses"]];
   if (esAdmin) rangos.push(["todo", "Todo"]);
+  rangos.push(["custom", "Elegir fechas…"]);
   const textoLinea = (l) => {
+    if (l.tipo === "comision" && l.manual) return `Ajuste manual · venta ${fmt(l.base)} (${num(l.pct)}%)${l.nota ? " · " + esc(l.nota) : ""}`;
     if (l.tipo === "comision") return `Comisión ${num(l.pct)}% sobre ${fmt(l.base)}`;
     if (l.tipo === "pago") return `Pago recibido${l.nota ? " · " + esc(l.nota) : ""}`;
     return esc(l.nota || "Descuento");
@@ -894,12 +943,16 @@ async function vistaSaldo(empId, propio, volver = null) {
       <button class="btn sec" data-a="perdonar">Perdonar</button>
     </div>` : ""}
     <select data-c="rango">${rangos.map(([v, l]) => `<option value="${v}"${v === r ? " selected" : ""}>${l}</option>`).join("")}</select>
+    ${r === "custom" ? `<div class="grid2"><label class="mut">Desde<input type="date" data-c="desde" value="${esc(SALDO.desde)}"></label>
+      <label class="mut">Hasta<input type="date" data-c="hasta" value="${esc(SALDO.hasta)}"></label></div>` : ""}
     <div class="grid2">
       <div class="card"><div class="mut">Promedio diario (neto)</div><div class="big">${fmt(G.promedioDiario)}</div><div class="mut">en ${G.diasTrabajados} días con ruta</div></div>
       <div class="card"><div class="mut">Ganado en el período</div><div class="big">${fmt(G.neto)}</div>
         <div class="mut">${fmt(G.comisiones)} comisiones${G.descuentos ? ` − ${fmt(G.descuentos)} descuentos` : ""}</div></div>
     </div>
     ${esAdmin && !propio ? `<div class="grid2">
+      <button class="btn" data-a="manual">+ Venta manual</button>
+      ${perfil?.rol === "vendedor" && perfil.entregador_id ? `<button class="btn sec" data-a="sync">Sincronizar ventas anteriores</button>` : ""}
       <button class="btn" data-a="pagar">Registrar pago</button>
       <button class="btn sec" data-a="pin">Cambiar PIN</button>
       <button class="btn sec" data-a="pct">Cambiar % comisión</button>
@@ -909,7 +962,7 @@ async function vistaSaldo(empId, propio, volver = null) {
     <div class="card" style="margin-top:12px"><b>Movimientos</b>
       ${lineas.length ? lineas.map((l) => `<div class="mov"><div class="row"><span>${textoLinea(l)}</span>
         <b class="${l.tipo === "comision" ? "grn" : "red"}">${l.tipo === "comision" ? "+" : "−"}${fmt(l.monto)}</b></div>
-        <div class="mut">${fechaCorta(l.fecha)}</div></div>`).join("") : `<p class="mut">Sin movimientos en este período.</p>`}</div>
+        <div class="mut">${fechaCorta(l.fecha)}${esAdmin && !propio && l.manual ? ` <button class="x" data-a="editManual" data-id="${l.id}" aria-label="Editar">✎</button><button class="x" data-a="delManual" data-id="${l.id}" aria-label="Quitar">✕</button>` : ""}</div></div>`).join("") : `<p class="mut">Sin movimientos en este período.</p>`}</div>
     <div class="card" style="margin-top:12px"><b>Faltantes y sobrantes (otros turnos)</b>
       ${hist.length ? hist.map((h) => { const [t, sg, cl] = HIST[h.tipo] || [h.tipo, "", ""];
         return `<div class="mov"><div class="row"><span>${t}${h.nota && h.tipo !== "faltante" && h.tipo !== "sobrante" ? " · " + esc(h.nota) : ""}</span>
@@ -917,8 +970,55 @@ async function vistaSaldo(empId, propio, volver = null) {
         : `<p class="mut">Sin faltantes ni sobrantes en este período.</p>`}</div>
     ${!esAdmin ? `<p class="mut">Aquí ves hasta 3 meses atrás. Tu saldo acumulado incluye todo lo que aún no se te ha pagado.</p>` : ""}`;
 
-  HC.rango = (v) => { SALDO.rango = v; vistaSaldo(empId, propio, volver); };
+  HC.rango = (v) => {
+    SALDO.rango = v;
+    if (v === "custom" && !SALDO.desde) { SALDO.desde = sumarDias(hoyBogota(), -6); SALDO.hasta = hoyBogota(); }
+    vistaSaldo(empId, propio, volver);
+  };
+  HC.desde = (v) => { SALDO.desde = v; vistaSaldo(empId, propio, volver); };
+  HC.hasta = (v) => { SALDO.hasta = v; vistaSaldo(empId, propio, volver); };
   const recargar = () => vistaSaldo(empId, propio, volver);
+  const pctEmp = num(perfil?.pct_comision);
+  const manualForm = (l) => formModal({
+    title: l ? `Editar venta manual · ${emp.nombre}` : `Venta manual · ${emp.nombre}`,
+    intro: `Se aplica solo a ${esc(emp.nombre)} con su ${pctEmp}%${l ? ` (la de este ajuste: ${num(l.pct)}%)` : ` (ej. 100.000 → ${esc(fmt(Math.round(100000 * pctEmp / 100)))})`}. Suma a su comisión, no a su total de ventas.`,
+    fields: [
+      { id: "venta", label: "Valor de la venta", type: "number", value: l?.base ?? "", required: true },
+      { id: "fecha", label: "Fecha", type: "date", value: l?.fecha ?? hoyBogota(), required: true },
+      { id: "nota", label: "Nota", type: "text", value: l?.nota ?? "", placeholder: "Ej. entrega pedido Don Pedro" },
+    ],
+    ok: l ? "Guardar cambios" : "Agregar",
+    onSubmit: async (v) => {
+      if (!(v.venta > 0)) throw new Error("La venta debe ser mayor a 0");
+      const m = l
+        ? await Q(sb.rpc("ajuste_manual_editar", { p_id: l.id, p_venta: v.venta, p_fecha: v.fecha, p_nota: v.nota || null }))
+        : await Q(sb.rpc("ajuste_manual_crear", { p_emp: empId, p_venta: v.venta, p_fecha: v.fecha, p_nota: v.nota || null }));
+      toast(`Comisión de ${fmt(m)} ${l ? "actualizada" : "agregada"}`);
+      recargar();
+    },
+  });
+  H.manual = () => manualForm(null);
+  H.editManual = (d) => manualForm(lineas.find((x) => x.id === d.id));
+  H.delManual = async (d) => {
+    if (!confirm("¿Quitar esta venta manual?")) return;
+    await Q(sb.rpc("ajuste_manual_borrar", { p_id: d.id }));
+    toast("Venta manual quitada");
+    recargar();
+  };
+  H.sync = () => formModal({
+    title: `Sincronizar ventas anteriores · ${emp.nombre}`,
+    intro: `Le da su ${pctEmp}% sobre la venta real de las rutas ya cerradas de ${esc(nombreDe(perfil?.entregador_id))}. No duplica las que ya tiene. Antes de aplicar verás un resumen.`,
+    fields: [{ id: "desde", label: "¿Desde qué fecha se sincroniza?", type: "date", value: sumarDias(hoyBogota(), -30), required: true }],
+    ok: "Ver resumen",
+    onSubmit: async (v) => {
+      const p = await Q(sb.rpc("sincronizar_vendedor", { p_vend: empId, p_desde: v.desde, p_aplicar: false }));
+      if (!p.rutas) { toast("No hay rutas por sincronizar desde esa fecha"); return; }
+      if (!confirm(`Se sincronizarán ${p.rutas} ruta(s) desde ${fechaCorta(v.desde)}.\nComisión total para ${emp.nombre}: ${fmt(p.comision)}.\n\n¿Aplicar?`)) return;
+      await Q(sb.rpc("sincronizar_vendedor", { p_vend: empId, p_desde: v.desde, p_aplicar: true }));
+      toast(`Sincronizado: ${p.rutas} ruta(s), ${fmt(p.comision)}`);
+      recargar();
+    },
+  });
   H.pagar = () => formModal({
     title: `Pago a ${emp.nombre}`, intro: `Saldo actual: ${esc(fmt(saldo))}. Al pagar todo, el saldo vuelve a 0.`,
     fields: [
@@ -974,7 +1074,7 @@ async function vistaSaldo(empId, propio, volver = null) {
       options: [{ v: "", l: "Sin entregador" }, ...entregadoresLibres(empId).map((d) => ({ v: d.id, l: d.nombre }))] }],
     onSubmit: async (v) => {
       await Q(sb.rpc("admin_asignar_entregador", { p_vendedor: empId, p_entregador: v.ent || null }));
-      await cargarBase(); toast("Entregador actualizado"); recargar();
+      await cargarBase(); toast(v.ent ? "Entregador actualizado. Si tiene ventas anteriores, usa «Sincronizar ventas anteriores»." : "Entregador actualizado"); recargar();
     },
   });
   H.desbloquear = async () => { await Q(sb.rpc("admin_desbloquear", { p_id: empId })); toast("Cuenta desbloqueada"); recargar(); };
@@ -1005,8 +1105,10 @@ async function vistaEquipo() {
   const lista = await Q(sb.rpc("resumen_empleados"));
   if (tok !== renderId) return;
   const porPagar = lista.filter((e) => num(e.saldo) > 0).reduce((s, e) => s + num(e.saldo), 0);
+  const sinEnt = lista.filter((e) => e.rol === "vendedor" && e.activo && !e.entregador_id);
   $app.innerHTML = `
     <div class="card"><div class="mut">Total por pagar al equipo</div><div class="big">${fmt(porPagar)}</div></div>
+    ${sinEnt.length ? `<div class="msg err">⚠ ${esc(sinEnt.map((e) => e.nombre).join(", "))} no tiene entregador asignado: no gana comisión de las rutas nuevas. Ábrelo y toca «Cambiar entregador».</div>` : ""}
     <button class="btn" data-a="nuevo">+ Nuevo vendedor o entregador</button><div style="height:12px"></div>
     ${lista.length ? lista.map((e) => `<div class="card emp" data-a="ver" data-id="${e.id}">
       <div class="row"><b>${esc(e.nombre)}</b><b class="${num(e.saldo) < 0 ? "red" : ""}">${fmt(e.saldo)}</b></div>
