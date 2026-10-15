@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0f766e">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
+<title>Cuentas Empleados</title>
+<style>
+:root{--bg:#f4f6f8;--card:#fff;--tx:#0f172a;--mut:#64748b;--pri:#0f766e;--red:#b91c1c;--grn:#15803d;--bd:#e2e8f0;--warn:#fef3c7;--warntx:#92400e}
+@media(prefers-color-scheme:dark){:root{--bg:#0b1220;--card:#162033;--tx:#e8eef7;--mut:#94a3b8;--pri:#14b8a6;--red:#f87171;--grn:#4ade80;--bd:#26344d;--warn:#3b2f0b;--warntx:#fcd34d}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--tx);font:16px/1.4 system-ui,-apple-system,Roboto,sans-serif;padding-bottom:calc(76px + env(safe-area-inset-bottom))}
+header{background:var(--pri);color:#fff;padding:12px 16px;display:flex;align-items:center;gap:10px;position:sticky;top:0;z-index:5}
+header h1{font-size:18px;margin:0;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+header button{background:transparent;border:1px solid #ffffff88;color:#fff;border-radius:8px;padding:6px 10px;font-size:14px}
+main{padding:14px;max-width:680px;margin:0 auto}
+h2,h3{margin:0 0 8px}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:14px;padding:12px 14px;margin-bottom:10px}
+.card.flush{padding:0;overflow-x:auto}
+.row{display:flex;justify-content:space-between;align-items:center;gap:8px}
+.sec-h{margin:16px 2px 8px}
+.mut{color:var(--mut);font-size:13px}
+.big{font-size:21px;font-weight:700}
+.huge{font-size:32px;font-weight:800}
+.red{color:var(--red)}.grn{color:var(--grn)}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px}
+.grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:8px}
+.btn{background:var(--pri);color:#fff;border:0;border-radius:10px;padding:12px 14px;font-size:15px;font-weight:600;width:100%}
+.btn.sec{background:transparent;color:var(--pri);border:1.5px solid var(--pri)}
+.btn.danger{background:transparent;color:var(--red);border:1.5px solid var(--red)}
+.btn.sm{padding:9px 8px;font-size:14px;margin-top:8px}
+.grid2 .btn.sm,.grid3 .btn.sm{margin-top:0}
+.btn.auto{width:auto;margin:0;padding:7px 12px}
+.btn:disabled{opacity:.5}
+input,select,textarea{width:100%;padding:12px;border-radius:10px;border:1px solid var(--bd);background:var(--card);color:var(--tx);font-size:16px;margin:6px 0 10px}
+label{font-size:13px;color:var(--mut)}
+.fld[hidden]{display:none}
+.emp{cursor:pointer}.emp:active{opacity:.7}
+.chip{display:inline-block;font-size:12px;padding:2px 8px;border-radius:99px;border:1px solid var(--bd);color:var(--mut)}
+.chip.warn{background:var(--warn);color:var(--warntx);border-color:transparent}
+.msg{padding:10px;border-radius:10px;margin:8px 0;font-size:14px}
+.msg.err{background:#fee2e2;color:#7f1d1d}.msg.ok{background:#dcfce7;color:#14532d}
+@media(prefers-color-scheme:dark){.msg.err{background:#451a1a;color:#fecaca}.msg.ok{background:#12301d;color:#bbf7d0}}
+.modal{position:fixed;inset:0;background:#0009;display:flex;align-items:flex-end;justify-content:center;z-index:20}
+.modal>div{background:var(--card);width:100%;max-width:680px;max-height:92vh;overflow:auto;border-radius:18px 18px 0 0;padding:16px 16px calc(16px + env(safe-area-inset-bottom))}
+.link{background:none;border:0;color:var(--pri);font-size:14px;padding:10px;width:100%}
+.link.inline{width:auto;padding:0 4px}
+.x{background:none;border:0;color:var(--red);font-size:15px;padding:2px 6px}
+.tabla{width:100%;border-collapse:collapse;font-size:14px}
+.tabla th,.tabla td{padding:8px 10px;border-bottom:1px solid var(--bd);text-align:left}
+.tabla th{font-size:12px;color:var(--mut);font-weight:600}
+.tabla .r{text-align:right;white-space:nowrap}
+.tabla tr.tot td{font-weight:700}
+.tabla tbody tr:last-child td{border-bottom:0}
+.mov{border-top:1px solid var(--bd);padding:8px 0}.mov:first-of-type{border-top:0}
+nav{position:fixed;left:0;right:0;bottom:0;background:var(--card);border-top:1px solid var(--bd);display:flex;padding-bottom:env(safe-area-inset-bottom);z-index:10}
+nav[hidden]{display:none}
+nav button{flex:1;background:none;border:0;color:var(--mut);padding:8px 2px 6px;font-size:11px;display:flex;flex-direction:column;align-items:center;gap:2px}
+nav button span{font-size:20px;line-height:1}
+nav button.on{color:var(--pri);font-weight:700}
+.toast{position:fixed;left:12px;right:12px;bottom:calc(86px + env(safe-area-inset-bottom));z-index:30;padding:12px 14px;border-radius:12px;color:#fff;background:#0f766e;text-align:center;font-size:14px}
+.toast.err{background:#b91c1c}
+</style>
+</head>
+<body>
+<header><h1 id="title">Cuentas Empleados</h1><button id="back" hidden>← Volver</button><button id="out" hidden>Salir</button></header>
+<main id="app"><p class="mut">Cargando…</p></main>
+<nav id="nav" hidden></nav>
+<script type="module" src="app.js"></script>
+</body>
+</html>
