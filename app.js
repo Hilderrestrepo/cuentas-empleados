@@ -451,7 +451,7 @@ async function rutaView(id, volver, silencioso = false) {
   const ruta = await Q(sb.from("rutas").select("*").eq("id", id).single());
   const esAdmin = S.me.rol === "admin";
   const esDueno = ruta.entregador_id === S.me.id;
-  // Admin y vendedor ven todo (el vendedor solo en lectura); el entregador solo lo suyo.
+  // Admin ve todo; cada entregador lo suyo; el vendedor solo lo de su entregador (en lectura).
   const esDinero = S.me.rol !== "entregador" || esDueno;
   const guardada = ruta.estado === "guardada";
   const editable = !guardada && (esAdmin || esDueno);
@@ -495,16 +495,16 @@ async function rutaView(id, volver, silencioso = false) {
 
   /* --- comisiones --- */
   let comHtml = "";
-  if ((esAdmin || esDueno) && !guardada && facturas.length) {
-    const pctMap = Object.fromEntries(S.dir.map((d) => [d.id, d.pct_comision]));
-    const K = comisiones(C, pctDe(ruta.entregador_id), pctMap);
+  const vendAtado = S.dir.find((d) => d.rol === "vendedor" && d.entregador_id === ruta.entregador_id && d.activo);
+  if ((esAdmin || esDueno) && !guardada && (facturas.length || ruta.valor_cargue != null)) {
+    const K = comisiones(C, pctDe(ruta.entregador_id), vendAtado ? vendAtado.pct_comision : null);
     const desc = C.faltanteEntregador;
     comHtml = `<div class="card"><b>Comisiones estimadas</b>
       <table class="tabla">
         ${fila(`Entregador ${esc(entNombre)} (${pctDe(ruta.entregador_id)}%)`, fmt(K.entregador))}
-        ${S.me.rol === "admin" ? K.vendedores.map((v) => fila(`Vendedor ${esc(nombreDe(v.id))} (${pctDe(v.id)}%)`, fmt(v.monto))).join("") : ""}
+        ${S.me.rol === "admin" ? (vendAtado ? fila(`Vendedor ${esc(vendAtado.nombre)} (${num(vendAtado.pct_comision)}%)`, fmt(K.vendedor)) : fila("Vendedor", "sin vendedor atado")) : ""}
         ${desc > 0 ? fila("Descuentos al entregador (faltantes)", "−" + fmt(desc), { cls: "red" }) : ""}
-      </table><div class="mut">Se calculan de verdad al guardar.</div></div>`;
+      </table><div class="mut">Las dos comisiones se miden sobre la venta real de la ruta. Se calculan de verdad al guardar.</div></div>`;
   } else if (guardada && esDinero && libro.length) {
     comHtml = `<div class="card"><b>Comisiones y descuentos de esta ruta</b><table class="tabla">
       ${libro.map((l) => fila(`${esc(nombreDe(l.empleado_id))} · ${l.tipo === "comision" ? `comisión ${num(l.pct)}% sobre ${fmt(l.base)}` : esc(l.nota || "Descuento")}`,
@@ -589,10 +589,10 @@ async function rutaView(id, volver, silencioso = false) {
   H.delGasto = (d) => confirmarBorrar("gastos_ruta", d.id, "¿Quitar este gasto?");
 
   const facturaForm = (f) => {
-    // Primero los vendedores; el administrador (si también vende) queda al final.
+    // El vendedor sale solo del entregador de la ruta; si no hay uno atado, se escoge de la lista.
     const vendedores = S.dir.filter((d) => (d.rol === "vendedor" || d.rol === "admin") && d.activo)
       .sort((a, b) => (a.rol === "admin") - (b.rol === "admin"));
-    if (!vendedores.length) throw new Error("Primero crea un vendedor en la pestaña Equipo");
+    if (!vendAtado && !vendedores.length) throw new Error("Primero crea un vendedor en la pestaña Equipo");
     const pf = f ? C.porFactura.find((x) => x.id === f.id) : null;
     const clientes = S.clientes.filter((c) => c.activo || (f && c.id === f.cliente_id));
     formModal({
@@ -601,7 +601,7 @@ async function rutaView(id, volver, silencioso = false) {
         { id: "numero", label: "Número de factura", type: "text", value: f?.numero ?? "" },
         { id: "cliente", label: "Cliente", type: "select", value: f?.cliente_id ?? "", options: [{ v: "", l: "➕ Cliente nuevo…" }, ...clientes.map((c) => ({ v: c.id, l: c.nombre }))] },
         { id: "cliente_nuevo", label: "Nombre del cliente nuevo", type: "text", showIf: (v) => v.cliente === "" },
-        { id: "vendedor", label: "Vendedor que la vendió", type: "select", value: f?.vendedor_id ?? vendedores[0].id, options: vendedores.map((d) => ({ v: d.id, l: d.nombre })) },
+        ...(vendAtado ? [] : [{ id: "vendedor", label: "Vendedor que la vendió", type: "select", value: f?.vendedor_id ?? vendedores[0].id, options: vendedores.map((d) => ({ v: d.id, l: d.nombre })) }]),
         { id: "valor", label: "Valor de la factura", type: "number", value: f?.valor ?? "", required: true },
         { id: "efectivo", label: "Cobró en efectivo", type: "number", value: pf?.ef || "" },
         { id: "transferencia", label: "Cliente transfirió a la cuenta del dueño", type: "number", value: pf?.tr || "" },
@@ -620,7 +620,7 @@ async function rutaView(id, volver, silencioso = false) {
         const ajTot = f ? pf.aj : 0;
         if (num(v.efectivo) + num(v.transferencia) > v.valor - ajTot) throw new Error("Lo cobrado supera la venta real de esta factura");
         let fid = f?.id;
-        const datos = { numero: v.numero || null, cliente_id: clienteId, vendedor_id: v.vendedor, valor: v.valor };
+        const datos = { numero: v.numero || null, cliente_id: clienteId, vendedor_id: vendAtado ? (f?.vendedor_id ?? vendAtado.id) : v.vendedor, valor: v.valor };
         const fFirma = await subirFoto(v.foto_firma, id);
         const fComp = await subirFoto(v.foto_comp, id);
         if (fFirma) datos.foto = fFirma;
@@ -876,7 +876,9 @@ async function vistaSaldo(empId, propio, volver = null) {
 
   $app.innerHTML = `
     ${!propio && perfil ? `<div class="mut" style="margin:0 4px 8px">@${esc(perfil.usuario)} · ${ROL[perfil.rol]} · comisión ${num(perfil.pct_comision)}%
-      ${perfil.bloqueado ? ` <span class="chip warn">bloqueado</span>` : ""}${!perfil.activo ? ` <span class="chip warn">inactivo</span>` : ""}</div>` : ""}
+      ${perfil.bloqueado ? ` <span class="chip warn">bloqueado</span>` : ""}${!perfil.activo ? ` <span class="chip warn">inactivo</span>` : ""}</div>
+      ${perfil.rol === "vendedor" ? `<div class="mut" style="margin:0 4px 8px">Entregador que lleva sus ventas: <b>${esc(S.dir.find((d) => d.id === perfil.entregador_id)?.nombre || "sin asignar")}</b></div>` : ""}` : ""}
+    ${propio && S.me.rol === "vendedor" ? `<div class="mut" style="margin:0 4px 8px">Tu entregador: <b>${esc(nombreEntregadorDe(S.me.id))}</b>. Tu comisión se mide sobre la venta real de su ruta.</div>` : ""}
     <div class="grid2">
       <div class="card"><div class="mut">Mi saldo (lo que se le debe pagar)</div>
         <div class="big ${saldo < 0 ? "red" : ""}">${fmt(saldo)}</div>
@@ -901,6 +903,7 @@ async function vistaSaldo(empId, propio, volver = null) {
       <button class="btn" data-a="pagar">Registrar pago</button>
       <button class="btn sec" data-a="pin">Cambiar PIN</button>
       <button class="btn sec" data-a="pct">Cambiar % comisión</button>
+      ${perfil?.rol === "vendedor" ? `<button class="btn sec" data-a="entregador">Cambiar entregador</button>` : ""}
       <button class="btn sec" data-a="${perfil?.bloqueado ? "desbloquear" : "activo"}">${perfil?.bloqueado ? "Desbloquear cuenta" : perfil?.activo ? "Desactivar" : "Activar"}</button>
     </div>` : ""}
     <div class="card" style="margin-top:12px"><b>Movimientos</b>
@@ -965,6 +968,15 @@ async function vistaSaldo(empId, propio, volver = null) {
       await cargarBase(); recargar();
     },
   });
+  H.entregador = () => formModal({
+    title: `Entregador de ${emp.nombre}`, intro: "El vendedor ve solo las rutas de su entregador y gana su % sobre la venta real de esa ruta. Aplica a las rutas que se guarden desde ahora.",
+    fields: [{ id: "ent", label: "Entregador", type: "select", value: perfil?.entregador_id ?? "",
+      options: [{ v: "", l: "Sin entregador" }, ...entregadoresLibres(empId).map((d) => ({ v: d.id, l: d.nombre }))] }],
+    onSubmit: async (v) => {
+      await Q(sb.rpc("admin_asignar_entregador", { p_vendedor: empId, p_entregador: v.ent || null }));
+      await cargarBase(); toast("Entregador actualizado"); recargar();
+    },
+  });
   H.desbloquear = async () => { await Q(sb.rpc("admin_desbloquear", { p_id: empId })); toast("Cuenta desbloqueada"); recargar(); };
   H.activo = async () => {
     const nuevo = !perfil.activo;
@@ -977,6 +989,17 @@ async function vistaSaldo(empId, propio, volver = null) {
 /* ------------------------------------------------------------------ */
 /* Equipo (admin)                                                      */
 /* ------------------------------------------------------------------ */
+const nombreEntregadorDe = (vendedorId) => {
+  const eid = S.dir.find((d) => d.id === vendedorId)?.entregador_id;
+  return S.dir.find((d) => d.id === eid)?.nombre || "sin asignar";
+};
+
+// Entregadores activos que todavía no tienen vendedor (o el que ya tiene este vendedor).
+function entregadoresLibres(vendedorId) {
+  return S.dir.filter((d) => d.rol === "entregador" && d.activo &&
+    !S.dir.some((x) => x.rol === "vendedor" && x.entregador_id === d.id && x.id !== vendedorId));
+}
+
 async function vistaEquipo() {
   const tok = view("Equipo");
   const lista = await Q(sb.rpc("resumen_empleados"));
@@ -987,7 +1010,7 @@ async function vistaEquipo() {
     <button class="btn" data-a="nuevo">+ Nuevo vendedor o entregador</button><div style="height:12px"></div>
     ${lista.length ? lista.map((e) => `<div class="card emp" data-a="ver" data-id="${e.id}">
       <div class="row"><b>${esc(e.nombre)}</b><b class="${num(e.saldo) < 0 ? "red" : ""}">${fmt(e.saldo)}</b></div>
-      <div class="mut">${ROL[e.rol]} · @${esc(e.usuario)} · ${num(e.pct_comision)}%
+      <div class="mut">${ROL[e.rol]} · @${esc(e.usuario)} · ${num(e.pct_comision)}%${e.rol === "vendedor" ? ` · entrega: ${esc(S.dir.find((d) => d.id === e.entregador_id)?.nombre || "sin entregador")}` : e.rol === "entregador" ? ` · vendedor: ${esc(lista.find((x) => x.rol === "vendedor" && x.entregador_id === e.id)?.nombre || "sin vendedor")}` : ""}
         ${e.bloqueado ? ` <span class="chip warn">bloqueado</span>` : ""}${!e.activo ? ` <span class="chip warn">inactivo</span>` : ""}</div></div>`).join("")
       : `<div class="card mut">Todavía no hay empleados. Crea tu primer vendedor o entregador.</div>`}`;
   H.ver = (d) => vistaSaldo(d.id, false, () => tab("equipo"));
@@ -997,11 +1020,18 @@ async function vistaEquipo() {
       { id: "nombre", label: "Nombre", type: "text", required: true },
       { id: "usuario", label: "Usuario para entrar (minúsculas, sin espacios)", type: "text", required: true, placeholder: "ej. carlos" },
       { id: "rol", label: "Rol", type: "select", options: [{ v: "entregador", l: "Entregador (4%)" }, { v: "vendedor", l: "Vendedor (3,5%)" }] },
+      { id: "entregador", label: "Entregador que entrega las ventas de este vendedor", type: "select", value: "", showIf: (v) => v.rol === "vendedor",
+        options: [{ v: "", l: "Escoge el entregador…" }, ...entregadoresLibres(null).map((d) => ({ v: d.id, l: d.nombre }))] },
       { id: "pin", label: "PIN de 4 dígitos", type: "pin", required: true },
       { id: "pct", label: "% de comisión (vacío = 4% entregador, 3,5% vendedor)", type: "number", step: 0.01 },
     ],
     onSubmit: async (v) => {
-      await llamarFn({ accion: "crear", nombre: v.nombre, usuario: v.usuario.toLowerCase(), rol: v.rol, pin: v.pin, pct_comision: v.pct });
+      if (v.rol === "vendedor" && !v.entregador) throw new Error("Escoge el entregador de este vendedor (primero crea al entregador si aún no existe)");
+      const nuevo = await llamarFn({ accion: "crear", nombre: v.nombre, usuario: v.usuario.toLowerCase(), rol: v.rol, pin: v.pin, pct_comision: v.pct });
+      if (v.rol === "vendedor") {
+        try { await Q(sb.rpc("admin_asignar_entregador", { p_vendedor: nuevo.id, p_entregador: v.entregador })); }
+        catch (e) { await cargarBase(); vistaEquipo(); throw new Error("El usuario se creó, pero no se pudo atar al entregador: " + e.message + ". Hazlo desde su ficha."); }
+      }
       await cargarBase();
       toast("Usuario creado");
       vistaEquipo();

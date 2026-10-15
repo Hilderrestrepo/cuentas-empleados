@@ -60,15 +60,11 @@ export function calcRuta({ facturas = [], ajustes = [], pagos = [], cobros = [],
   };
 }
 
-/** Comisiones: entregador % de la venta real de la ruta; vendedor % de la venta real de SUS facturas. */
-export function comisiones(C, pctEntregador, pctPorVendedor = {}) {
+/** Comisiones: entregador y su vendedor atado, ambos % de la venta real de la ruta. */
+export function comisiones(C, pctEntregador, pctVendedor = null) {
   const entregador = Math.round((C.real * num(pctEntregador)) / 100);
-  const base = {};
-  for (const f of C.porFactura) base[f.vendedor_id] = (base[f.vendedor_id] || 0) + f.real;
-  const vendedores = Object.entries(base).map(([id, b]) => ({
-    id, base: b, monto: Math.round((b * num(pctPorVendedor[id])) / 100),
-  }));
-  return { entregador, vendedores };
+  const vendedor = pctVendedor == null ? null : Math.round((C.real * num(pctVendedor)) / 100);
+  return { entregador, vendedor };
 }
 
 /** Ganancias a partir de las líneas del libro (comision, desc_*, pago). */
