@@ -488,7 +488,7 @@ async function rutaView(id, volver, silencioso = false) {
       ...(C.base > 0 ? [fila("+ Base con la que salió (se devuelve)", fmt(C.base))] : []),
       fila("= Debe entregar", fmt(C.esperado), { fuerte: true }),
       fila("− Entregado (efectivo y consignaciones)", "−" + fmt(C.entregado)),
-      fila(C.diferencia > 0 ? "= Faltante" : C.diferencia < 0 ? "= Sobrante" : "= Diferencia", fmt(Math.abs(C.diferencia)),
+      fila(C.diferencia > 0 ? "= Faltante (pasa a pendiente de otros turnos)" : C.diferencia < 0 ? "= Sobrante (a favor, otros turnos)" : "= Diferencia", fmt(Math.abs(C.diferencia)),
         { fuerte: true, cls: C.diferencia > 0 ? "red" : "grn" }),
     );
   }
@@ -498,7 +498,7 @@ async function rutaView(id, volver, silencioso = false) {
   if ((esAdmin || esDueno) && !guardada && facturas.length) {
     const pctMap = Object.fromEntries(S.dir.map((d) => [d.id, d.pct_comision]));
     const K = comisiones(C, pctDe(ruta.entregador_id), pctMap);
-    const desc = C.faltanteEntregador + Math.max(C.diferencia, 0);
+    const desc = C.faltanteEntregador;
     comHtml = `<div class="card"><b>Comisiones estimadas</b>
       <table class="tabla">
         ${fila(`Entregador ${esc(entNombre)} (${pctDe(ruta.entregador_id)}%)`, fmt(K.entregador))}
@@ -542,7 +542,7 @@ async function rutaView(id, volver, silencioso = false) {
   }).join("");
   const cobHtml = cobros.map((c) => `<div class="row mut"><span>${esc(c.cartera?.cliente?.nombre)} · #${esc(c.cartera?.factura?.numero || "s/n")} · ${c.tipo === "efectivo" ? "efectivo" : "transferencia directa"} ${fotoUI("cobros_cartera", c.id, c.foto)}</span>
     <span>${fmt(c.monto)} ${editable ? `<button class="x" data-a="editCobro" data-id="${c.id}" aria-label="Editar">✎</button><button class="x" data-a="delCobro" data-id="${c.id}">✕</button>` : ""}</span></div>`).join("");
-  const entHtml = entregas.map((e) => `<div class="row mut"><span>${e.tipo === "efectivo" ? "Efectivo en mano" : "Consignación · " + esc(S.cuentas.find((x) => x.id === e.cuenta_id)?.nombre || "")}
+  const entHtml = entregas.map((e) => `<div class="row mut"><span>${e.tipo === "efectivo" ? "Efectivo en mano" : "Consignación · " + esc(e.banco || S.cuentas.find((x) => x.id === e.cuenta_id)?.nombre || "")}
     ${e.tipo === "consignacion" ? fotoUI("entregas_dinero", e.id, e.comprobante) : ""}</span>
     <span>${fmt(e.monto)} ${editable ? `<button class="x" data-a="editEntrega" data-id="${e.id}" aria-label="Editar">✎</button><button class="x" data-a="delEntrega" data-id="${e.id}">✕</button>` : ""}</span></div>`).join("");
   const gasHtml = gastos.map((g) => `<div class="row mut"><span>${esc(g.concepto)}${g.nota ? " · " + esc(g.nota) : ""} ${fotoUI("gastos_ruta", g.id, g.foto)}</span>
@@ -563,7 +563,8 @@ async function rutaView(id, volver, silencioso = false) {
     <div class="card"><div class="row"><b>Devoluciones y faltantes</b>${editable ? `<button class="btn sm auto" data-a="addAj">+ Devolución</button>` : ""}</div>${devHtml || `<div class="mut">Ninguna.</div>`}</div>
     ${esDinero ? `
     <div class="card"><div class="row"><b>Cobros de fiados anteriores</b>${editable ? `<button class="btn sm auto" data-a="addCobro">+ Cobro</button>` : ""}</div>${cobHtml || `<div class="mut">Ninguno.</div>`}</div>
-    <div class="card"><div class="row"><b>Entrega de dinero</b>${editable ? `<button class="btn sm auto" data-a="addEntrega">+ Entrega</button>` : ""}</div>${entHtml || `<div class="mut">Ninguna.</div>`}</div>
+    <div class="card"><div class="row"><b>Entrega de dinero</b></div>
+      ${editable ? `<div class="grid2" style="margin:8px 0"><button class="btn sm" data-a="addEfectivo">+ Efectivo</button><button class="btn sm" data-a="addConsig">+ Consignación</button></div>` : ""}${entHtml || `<div class="mut">Ninguna.</div>`}</div>
     <div class="card"><div class="row"><b>Gastos de ruta</b>${editable ? `<button class="btn sm auto" data-a="addGasto">+ Gasto</button>` : ""}</div>${gasHtml || `<div class="mut">Ninguno.</div>`}</div>` : ""}
     ${editable ? `<button class="btn" data-a="guardar">Guardar cierre</button>
        <p class="mut">Después de guardar no se puede modificar ni borrar nada. Solo el administrador puede reabrirlo.</p>
@@ -725,32 +726,32 @@ async function rutaView(id, volver, silencioso = false) {
     });
   };
 
-  const entregaForm = (e) => {
-    const cuentas = S.cuentas.filter((c) => c.activa || (e && c.id === e.cuenta_id));
+  const BANCOS = ["Nequi", "Bancolombia", "Banco de Bogotá"];
+  // tipoFijo: "efectivo" | "consignacion". Cada consignación se anota por separado.
+  const entregaForm = (e, tipoFijo) => {
+    const tipo = e ? e.tipo : tipoFijo;
+    const consig = tipo === "consignacion";
     formModal({
-      title: e ? "Editar entrega de dinero" : "Entrega de dinero",
+      title: e ? (consig ? "Editar consignación" : "Editar efectivo entregado") : (consig ? "Nueva consignación" : "Efectivo en mano"),
       fields: [
-        { id: "tipo", label: "¿Cómo entregó?", type: "select", value: e?.tipo ?? "efectivo", options: [{ v: "efectivo", l: "Efectivo en mano" }, { v: "consignacion", l: "Consignación / transferencia al banco" }] },
+        ...(consig ? [{ id: "banco", label: "Banco", type: "select", value: e?.banco ?? "", required: true, options: [{ v: "", l: "Escoge el banco…" }, ...BANCOS.map((b) => ({ v: b, l: b }))] }] : []),
         { id: "monto", label: "Valor", type: "number", value: e?.monto ?? "", required: true },
-        { id: "cuenta", label: "Cuenta donde consignó", type: "select", value: e?.cuenta_id ?? "", showIf: (v) => v.tipo === "consignacion", options: cuentas.map((c) => ({ v: c.id, l: c.nombre })) },
-        { id: "foto", label: "📷 Foto del comprobante (opcional)", type: "file", showIf: (v) => v.tipo === "consignacion" },
+        ...(consig ? [{ id: "foto", label: "📷 Foto del comprobante (opcional)", type: "file" }] : []),
         { id: "nota", label: "Nota (opcional)", type: "text", value: e?.nota ?? "" },
       ],
       onSubmit: async (v) => {
         if (!(v.monto > 0)) throw new Error("El valor debe ser mayor a 0");
-        let path = null;
-        if (v.tipo === "consignacion") {
-          if (!cuentas.length) throw new Error("El administrador aún no ha registrado cuentas de consignación");
-          path = await subirFoto(v.foto, id);
-        }
-        const datos = { tipo: v.tipo, monto: v.monto, cuenta_id: v.tipo === "consignacion" ? v.cuenta : null, nota: v.nota || null };
-        if (e) await Q(sb.from("entregas_dinero").update({ ...datos, ...(path ? { comprobante: path } : v.tipo === "efectivo" ? { comprobante: null } : {}) }).eq("id", e.id));
+        if (consig && !BANCOS.includes(v.banco)) throw new Error("Escoge el banco");
+        const path = consig ? await subirFoto(v.foto, id) : null;
+        const datos = { tipo, monto: v.monto, banco: consig ? v.banco : null, cuenta_id: null, nota: v.nota || null };
+        if (e) await Q(sb.from("entregas_dinero").update({ ...datos, ...(path ? { comprobante: path } : {}) }).eq("id", e.id));
         else await Q(sb.from("entregas_dinero").insert({ ruta_id: id, ...datos, comprobante: path }));
         recargar();
       },
     });
   };
-  H.addEntrega = () => entregaForm(null);
+  H.addEfectivo = () => entregaForm(null, "efectivo");
+  H.addConsig = () => entregaForm(null, "consignacion");
   H.editEntrega = (d) => entregaForm(entregas.find((x) => x.id === d.id));
   H.foto = async (d) => {
     const { data, error } = await sb.storage.from("comprobantes").createSignedUrl(d.path, 300);
@@ -797,7 +798,8 @@ async function rutaView(id, volver, silencioso = false) {
     if (C.errores.length) throw new Error("Corrige las facturas marcadas en rojo antes de guardar");
     if (!facturas.length && !cobros.length) throw new Error("Agrega facturas o cobros antes de guardar");
     let aviso = "¿Guardar el cierre?\n\nDespués de guardar NO se puede modificar ni borrar nada. Solo el administrador puede reabrirlo.";
-    if (C.diferencia > 0) aviso += `\n\n⚠ Hay un FALTANTE de dinero de ${fmt(C.diferencia)} que se descontará del pago del entregador.`;
+    if (C.diferencia > 0) aviso += `\n\n⚠ Hay un FALTANTE de dinero de ${fmt(C.diferencia)}. Queda como pendiente de otros turnos; el administrador decide si lo descuenta.`;
+    if (C.diferencia < 0) aviso += `\n\nHay un SOBRANTE de dinero de ${fmt(-C.diferencia)}. Queda a favor en el pendiente de otros turnos.`;
     if (C.faltanteEntregador > 0) aviso += `\n\n⚠ Faltante de mercancía por pérdida del entregador: ${fmt(C.faltanteEntregador)} (se descuenta de su pago).`;
     const falt = [];
     const nFiado = C.porFactura.filter((pf) => pf.fiado > 0 && !facturas.find((f) => f.id === pf.id)?.foto).length;
@@ -845,13 +847,24 @@ async function vistaSaldo(empId, propio, volver = null) {
   let ql = sb.from("libro").select("*").eq("empleado_id", empId)
     .order("fecha", { ascending: false }).order("creado_en", { ascending: false }).limit(500);
   if (desde) ql = ql.gte("fecha", desde);
-  const [saldoRaw, lineas, perfil] = await Promise.all([
+  let qp = sb.from("pendientes_turno").select("*").eq("empleado_id", empId)
+    .order("fecha", { ascending: false }).order("creado_en", { ascending: false }).limit(500);
+  if (desde) qp = qp.gte("fecha", desde);
+  const [saldoRaw, lineas, perfil, pendRaw, hist] = await Promise.all([
     Q(sb.rpc("saldo_de", { p_emp: empId })),
     Q(ql),
     esAdmin && !propio ? Q(sb.rpc("resumen_empleados")).then((rows) => rows.find((x) => x.id === empId)) : Promise.resolve(null),
+    Q(sb.rpc("pendiente_de", { p_emp: empId })),
+    Q(qp),
   ]);
   if (tok !== renderId) return;
   const saldo = num(saldoRaw);
+  const pend = num(pendRaw);                       // <0 faltantes por saldar · >0 a favor
+  const sugerido = pend < 0 ? Math.min(-pend, Math.max(saldo, 0)) : 0;
+  const HIST = {
+    faltante: ["Faltante de dinero", "−", "red"], sobrante: ["Sobrante de dinero", "+", "grn"],
+    descuento: ["Descontado del saldo", "+", ""], perdon: ["Perdonado", "+", ""],
+  };
   const G = resumenGanancias(lineas);
   const rangos = [["7", "Últimos 7 días"], ["30", "Últimos 30 días"], ["90", "Últimos 3 meses"]];
   if (esAdmin) rangos.push(["todo", "Todo"]);
@@ -864,9 +877,20 @@ async function vistaSaldo(empId, propio, volver = null) {
   $app.innerHTML = `
     ${!propio && perfil ? `<div class="mut" style="margin:0 4px 8px">@${esc(perfil.usuario)} · ${ROL[perfil.rol]} · comisión ${num(perfil.pct_comision)}%
       ${perfil.bloqueado ? ` <span class="chip warn">bloqueado</span>` : ""}${!perfil.activo ? ` <span class="chip warn">inactivo</span>` : ""}</div>` : ""}
-    <div class="card"><div class="mut">Saldo acumulado (lo que se le debe pagar)</div>
-      <div class="huge ${saldo < 0 ? "red" : ""}">${fmt(saldo)}</div>
-      ${saldo < 0 ? `<div class="mut">Es negativo: los descuentos superan las comisiones. Se arrastra a los próximos cierres.</div>` : ""}</div>
+    <div class="grid2">
+      <div class="card"><div class="mut">Mi saldo (lo que se le debe pagar)</div>
+        <div class="big ${saldo < 0 ? "red" : ""}">${fmt(saldo)}</div>
+        ${saldo < 0 ? `<div class="mut">Es negativo: los descuentos superan las comisiones. Se arrastra a los próximos cierres.</div>` : ""}</div>
+      <div class="card"><div class="mut">Saldo pendiente de otros turnos</div>
+        <div class="big ${pend < 0 ? "red" : pend > 0 ? "grn" : ""}">${pend > 0 ? "+" : ""}${fmt(pend)}</div>
+        ${pend < 0 ? `<div class="mut" style="font-size:.75rem">Sugerido descontar de la comisión: <b>${fmt(sugerido)}</b>${sugerido < -pend ? ` · el resto (${fmt(-pend - sugerido)}) queda pendiente` : ""}</div>`
+          : pend > 0 ? `<div class="mut" style="font-size:.75rem">A favor: compensa faltantes de otros turnos.</div>`
+          : `<div class="mut" style="font-size:.75rem">Sin faltantes pendientes.</div>`}</div>
+    </div>
+    ${esAdmin && !propio && pend < 0 ? `<div class="grid2">
+      <button class="btn" data-a="descontar">Descontar</button>
+      <button class="btn sec" data-a="perdonar">Perdonar</button>
+    </div>` : ""}
     <select data-c="rango">${rangos.map(([v, l]) => `<option value="${v}"${v === r ? " selected" : ""}>${l}</option>`).join("")}</select>
     <div class="grid2">
       <div class="card"><div class="mut">Promedio diario (neto)</div><div class="big">${fmt(G.promedioDiario)}</div><div class="mut">en ${G.diasTrabajados} días con ruta</div></div>
@@ -883,6 +907,11 @@ async function vistaSaldo(empId, propio, volver = null) {
       ${lineas.length ? lineas.map((l) => `<div class="mov"><div class="row"><span>${textoLinea(l)}</span>
         <b class="${l.tipo === "comision" ? "grn" : "red"}">${l.tipo === "comision" ? "+" : "−"}${fmt(l.monto)}</b></div>
         <div class="mut">${fechaCorta(l.fecha)}</div></div>`).join("") : `<p class="mut">Sin movimientos en este período.</p>`}</div>
+    <div class="card" style="margin-top:12px"><b>Faltantes y sobrantes (otros turnos)</b>
+      ${hist.length ? hist.map((h) => { const [t, sg, cl] = HIST[h.tipo] || [h.tipo, "", ""];
+        return `<div class="mov"><div class="row"><span>${t}${h.nota && h.tipo !== "faltante" && h.tipo !== "sobrante" ? " · " + esc(h.nota) : ""}</span>
+        <b class="${cl}">${sg}${fmt(h.monto)}</b></div><div class="mut">${fechaCorta(h.fecha)}</div></div>`; }).join("")
+        : `<p class="mut">Sin faltantes ni sobrantes en este período.</p>`}</div>
     ${!esAdmin ? `<p class="mut">Aquí ves hasta 3 meses atrás. Tu saldo acumulado incluye todo lo que aún no se te ha pagado.</p>` : ""}`;
 
   HC.rango = (v) => { SALDO.rango = v; vistaSaldo(empId, propio, volver); };
@@ -901,6 +930,27 @@ async function vistaSaldo(empId, propio, volver = null) {
       recargar();
     },
   });
+  const resolver = (accion) => {
+    const descontar = accion === "descontar";
+    const tope = descontar ? sugerido : -pend;
+    if (!(tope > 0)) { toast("No hay saldo disponible para descontar"); return; }
+    formModal({
+      title: `${descontar ? "Descontar" : "Perdonar"} faltantes · ${emp.nombre}`,
+      intro: descontar
+        ? `Pendiente: ${esc(fmt(-pend))}. Se resta de su saldo (${esc(fmt(saldo))}) sin dejarlo negativo; lo que no cabe queda pendiente.`
+        : `Pendiente: ${esc(fmt(-pend))}. Se anula sin tocar su saldo.`,
+      fields: [{ id: "monto", label: "Valor", type: "number", value: tope, required: true }],
+      ok: descontar ? "Descontar" : "Perdonar",
+      onSubmit: async (v) => {
+        if (!(v.monto > 0) || v.monto > tope) throw new Error(`El valor debe ser mayor a 0 y no superar ${fmt(tope)}`);
+        await Q(sb.rpc("resolver_pendiente", { p_emp: empId, p_accion: accion, p_monto: v.monto }));
+        toast(descontar ? "Descontado del saldo" : "Faltante perdonado");
+        recargar();
+      },
+    });
+  };
+  H.descontar = () => resolver("descontar");
+  H.perdonar = () => resolver("perdonar");
   H.pin = () => formModal({
     title: `Nuevo PIN · ${emp.nombre}`, intro: "También desbloquea la cuenta si estaba bloqueada.",
     fields: [{ id: "pin", label: "PIN nuevo (4 a 8 dígitos)", type: "pin", required: true }],
@@ -965,37 +1015,15 @@ async function vistaEquipo() {
 async function vistaMas() {
   view("Más");
   $app.innerHTML = `
-    <div class="card emp" data-a="cuentas"><b>🏦 Cuentas de consignación</b><div class="mut">Donde los entregadores consignan el dinero</div></div>
     <div class="card emp" data-a="clientes"><b>🧑‍🤝‍🧑 Clientes</b><div class="mut">Plazo de fiado y teléfono de cada cliente</div></div>
     <div class="card emp" data-a="audit"><b>📋 Auditoría</b><div class="mut">Quién guardó, reabrió o pagó y cuándo</div></div>
     <div class="card emp" data-a="mipin"><b>🔑 Cambiar mi PIN</b></div>`;
-  H.cuentas = vistaCuentas; H.clientes = vistaClientes; H.audit = vistaAuditoria;
+  H.clientes = vistaClientes; H.audit = vistaAuditoria;
   H.mipin = () => formModal({
     title: "Cambiar mi PIN", intro: "Para el administrador recomiendo 6 a 8 dígitos.",
     fields: [{ id: "pin", label: "PIN nuevo (4 a 8 dígitos)", type: "pin", required: true }],
     onSubmit: async (v) => { await llamarFn({ accion: "cambiar_pin", usuario_id: S.me.id, pin: v.pin }); toast("PIN cambiado"); },
   });
-}
-
-async function vistaCuentas() {
-  const tok = view("Cuentas de consignación", () => tab("mas"));
-  await cargarBase();
-  if (tok !== renderId) return;
-  $app.innerHTML = `<button class="btn" data-a="nueva">+ Nueva cuenta</button><div style="height:12px"></div>` +
-    (S.cuentas.length ? S.cuentas.map((c) => `<div class="card"><div class="row"><b>${esc(c.nombre)}</b>
-      <button class="btn sec sm auto" data-a="alt" data-id="${c.id}">${c.activa ? "Desactivar" : "Activar"}</button></div>
-      <div class="mut">${esc(c.detalle || "")}</div></div>`).join("") : `<div class="card mut">Aún no hay cuentas. Agrega las cuentas del banco donde recibes las consignaciones.</div>`);
-  H.nueva = () => formModal({
-    title: "Nueva cuenta", fields: [
-      { id: "nombre", label: "Nombre", type: "text", required: true, placeholder: "Ej. Bancolombia ahorros" },
-      { id: "detalle", label: "Detalle (últimos dígitos, titular)", type: "text" }],
-    onSubmit: async (v) => { await Q(sb.from("cuentas_banco").insert({ nombre: v.nombre, detalle: v.detalle || null })); vistaCuentas(); },
-  });
-  H.alt = async (d) => {
-    const c = S.cuentas.find((x) => x.id === d.id);
-    await Q(sb.from("cuentas_banco").update({ activa: !c.activa }).eq("id", c.id));
-    vistaCuentas();
-  };
 }
 
 async function vistaClientes() {
