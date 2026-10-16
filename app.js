@@ -1149,9 +1149,10 @@ async function vistaMas() {
   view("Más");
   $app.innerHTML = `
     <div class="card emp" data-a="clientes"><b>🧑‍🤝‍🧑 Clientes</b><div class="mut">Plazo de fiado y teléfono de cada cliente</div></div>
+    <div class="card emp" data-a="fotos"><b>📷 Fotos guardadas</b><div class="mut">Ver el espacio usado y borrar fotos viejas</div></div>
     <div class="card emp" data-a="audit"><b>📋 Auditoría</b><div class="mut">Quién guardó, reabrió o pagó y cuándo</div></div>
     <div class="card emp" data-a="mipin"><b>🔑 Cambiar mi PIN</b></div>`;
-  H.clientes = vistaClientes; H.audit = vistaAuditoria;
+  H.clientes = vistaClientes; H.audit = vistaAuditoria; H.fotos = vistaFotos;
   H.mipin = () => formModal({
     title: "Cambiar mi PIN", intro: "Para el administrador recomiendo 6 a 8 dígitos.",
     fields: [{ id: "pin", label: "PIN nuevo (4 a 8 dígitos)", type: "pin", required: true }],
@@ -1192,13 +1193,55 @@ async function vistaClientes() {
   H.editar = (d) => form(S.clientes.find((c) => c.id === d.id));
 }
 
+/* Fotos guardadas: el admin ve el espacio y borra las viejas (solo la imagen; los datos se conservan). */
+const FOTOS = { dias: 30 };
+async function vistaFotos() {
+  const tok = view("Fotos guardadas", () => tab("mas"));
+  const [totRaw, viejas] = await Promise.all([Q(sb.rpc("fotos_total")), Q(sb.rpc("fotos_antiguas", { p_dias: FOTOS.dias }))]);
+  if (tok !== renderId) return;
+  const tot = Array.isArray(totRaw) ? totRaw[0] : totRaw;
+  const mb = (b) => (num(b) / 1048576).toLocaleString("es-CO", { maximumFractionDigits: 1 }) + " MB";
+  const peso = viejas.reduce((s, f) => s + num(f.bytes), 0);
+  $app.innerHTML = `
+    <div class="grid2">
+      <div class="card"><div class="mut">Fotos guardadas</div><div class="big">${num(tot?.fotos)}</div></div>
+      <div class="card"><div class="mut">Espacio usado</div><div class="big">${mb(tot?.bytes)}</div><div class="mut">de 1.024 MB (plan gratis)</div></div>
+    </div>
+    <div class="card"><b>Borrar fotos viejas</b>
+      <div class="mut" style="margin:4px 0 8px">Solo se borra la imagen. La factura, el cobro o el gasto se conservan. No se tocan las fotos de rutas abiertas ni las facturas firmadas de fiados que siguen sin pagar. No se puede deshacer.</div>
+      <select data-c="dias">${[[30, "Más de 30 días"], [60, "Más de 60 días"], [90, "Más de 90 días"]].map(([v, l]) => `<option value="${v}"${v === FOTOS.dias ? " selected" : ""}>${l}</option>`).join("")}</select>
+      <p>${viejas.length ? `Se pueden borrar <b>${viejas.length}</b> foto(s) y liberar <b>${mb(peso)}</b>.` : "No hay fotos para borrar con ese filtro."}</p>
+      <button class="btn danger" data-a="borrarFotos"${viejas.length ? "" : " disabled"}>Borrar ${viejas.length} foto(s)</button></div>`;
+  HC.dias = (v) => { FOTOS.dias = Number(v); vistaFotos(); };
+  H.borrarFotos = async () => {
+    if (!viejas.length) return;
+    if (!confirm(`¿Borrar ${viejas.length} foto(s) de más de ${FOTOS.dias} días y liberar ${mb(peso)}?\n\nNo se puede deshacer. Los datos de las facturas y cobros se conservan.`)) return;
+    const pesos = new Map(viejas.map((f) => [f.name, num(f.bytes)]));
+    let n = 0, liberado = 0;
+    for (let i = 0; i < viejas.length; i += 50) {
+      const lote = viejas.slice(i, i + 50).map((f) => f.name);
+      const { data, error } = await sb.storage.from("comprobantes").remove(lote);
+      if (error) throw new Error("No se pudieron borrar las fotos: " + error.message);
+      const ok = (data || []).map((x) => x.name);
+      if (ok.length) {
+        await Q(sb.rpc("fotos_limpiar_referencias", { p_paths: ok }));
+        n += ok.length; liberado += ok.reduce((s, x) => s + (pesos.get(x) || 0), 0);
+      }
+    }
+    toast(`Se borraron ${n} foto(s) y se liberaron ${mb(liberado)}`);
+    vistaFotos();
+  };
+}
+
 async function vistaAuditoria() {
   const tok = view("Auditoría", () => tab("mas"));
   const filas = await Q(sb.from("auditoria").select("*").order("id", { ascending: false }).limit(60));
   if (tok !== renderId) return;
   const ETQ = { guardar_ruta: "Guardó una ruta", reabrir_ruta: "Reabrió una ruta", pago: "Registró un pago", crear_usuario: "Creó un usuario",
     cambiar_pin: "Cambió un PIN", desbloquear: "Desbloqueó una cuenta", actualizar_perfil: "Cambió un perfil", posponer_cartera: "Pospuso un cobro",
-    bloqueo_por_intentos: "Cuenta bloqueada por intentos", setup_admin: "Creó el administrador" };
+    bloqueo_por_intentos: "Cuenta bloqueada por intentos", setup_admin: "Creó el administrador", borrar_fotos: "Borró fotos viejas",
+    ajuste_manual_crear: "Agregó una venta manual", ajuste_manual_editar: "Editó una venta manual", ajuste_manual_borrar: "Quitó una venta manual",
+    sincronizar_vendedor: "Sincronizó ventas de un vendedor", asignar_entregador: "Asignó un entregador", resolver_pendiente: "Resolvió un faltante" };
   $app.innerHTML = filas.length ? filas.map((a) => `<div class="card"><div class="row"><b>${esc(ETQ[a.accion] || a.accion)}</b><span class="mut">${fechaHora(a.fecha)}</span></div>
     <div class="mut">${esc(nombreDe(a.usuario_id))}${a.detalle ? " · " + esc(JSON.stringify(a.detalle)).slice(0, 160) : ""}</div></div>`).join("")
     : `<div class="card mut">Sin registros todavía.</div>`;

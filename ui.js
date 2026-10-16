@@ -52,7 +52,7 @@ function campo(f) {
   } else if (f.type === "textarea") {
     ctl = `<textarea id="${id}" rows="2">${esc(f.value ?? "")}</textarea>`;
   } else if (f.type === "file") {
-    ctl = `<input id="${id}" type="file" accept="image/*" capture="environment">`;
+    ctl = `<input id="${id}" type="file" accept="image/*">`;
   } else if (f.type === "number") {
     const step = f.step ?? 1;
     ctl = `<input id="${id}" type="number" inputmode="${step < 1 ? "decimal" : "numeric"}" min="0" step="${step}" value="${esc(f.value ?? "")}" ${f.placeholder ? `placeholder="${esc(f.placeholder)}"` : ""}>`;
