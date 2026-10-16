@@ -501,8 +501,9 @@ async function rutaView(id, volver, silencioso = false) {
   ];
   if (esDinero) {
     filas.push(
-      fila("Cobrado en efectivo (facturas)", fmt(C.efectivoFact)),
-      ...(C.sinFacturas > 0 ? [fila("+ Resto del cargue sin facturas (se cuenta como efectivo)", fmt(C.sinFacturas))] : []),
+      fila("− Fiado de hoy (queda por cobrar)", "−" + fmt(C.fiadoNuevo)),
+      fila("− Transferencias directas a la cuenta del dueño", "−" + fmt(C.transfFact)),
+      fila("= Efectivo de la venta del día", fmt(C.efectivoFact + C.sinFacturas), { fuerte: true }),
       fila("+ Fiados anteriores cobrados (efectivo)", fmt(C.cobrosEf)),
       fila("− Gastos de ruta", "−" + fmt(C.gastos)),
       ...(C.base > 0 ? [fila("+ Base con la que salió (se devuelve)", fmt(C.base))] : []),
@@ -581,7 +582,7 @@ async function rutaView(id, volver, silencioso = false) {
       <table class="tabla">${fila("Valor del cargue", ruta.valor_cargue == null ? "—" : fmt(ruta.valor_cargue))}${fila("Base (efectivo con el que sale)", fmt(ruta.base))}</table>
 </div>
     <div class="card"><table class="tabla">${filas.join("")}</table>
-      ${esDinero ? `<div class="mut" style="margin-top:6px">Fiado nuevo (queda por cobrar): ${fmt(C.fiadoNuevo)} · Transferencias directas: ${fmt(C.transfFact + C.cobrosTr)}</div>` : ""}</div>
+      ${esDinero && C.cobrosTr > 0 ? `<div class="mut" style="margin-top:6px">Cobros de fiados anteriores por transferencia directa (no son efectivo): ${fmt(C.cobrosTr)}</div>` : ""}</div>
     ${comHtml}
     ${editable && esDinero && porCobrar.length ? `<div class="card"><b>Clientes por cobrar (${porCobrar.length})</b>
       <div class="mut">${esAdmin ? "Pendientes de cobro. Como administrador puedes cerrar igual." : "Para finalizar, marca cada cliente: pagó, o no pagó con otra fecha."}</div></div>
